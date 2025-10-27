@@ -12,7 +12,7 @@
 
 """
 daemon.backend
-~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~
 
 This module provides a backend object to manage and persist backend daemon. 
 It implements a basic backend server using Python's socket and threading libraries.
@@ -68,14 +68,14 @@ def run_backend(ip, port, routes):
     Starts the backend server, binds to the specified IP and port, and listens for incoming
     connections. Each connection is handled in a separate thread. The backend accepts incoming
     connections and spawns a thread for each client.
-
-
+ 
+    
     :param ip (str): IP address to bind the server.
     :param port (int): Port number to listen on.
     :param routes (dict): Dictionary of route handlers.
     """
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
+    print("[Backend] Starting backend server...")
     try:
         server.bind((ip, port))
         server.listen(50)
@@ -85,11 +85,18 @@ def run_backend(ip, port, routes):
 
         while True:
             conn, addr = server.accept()
+
+            #
             #
             #  TODO: implement the step of the client incomping connection
             #        using multi-thread programming with the
             #        provided handle_client routine
             #
+
+            client_thread = threading.Thread(target=handle_client, args=(ip, port, conn, addr, routes))
+            client_thread.daemon = True  # Set as daemon thread
+            client_thread.start()
+            
     except socket.error as e:
       print("Socket error: {}".format(e))
 

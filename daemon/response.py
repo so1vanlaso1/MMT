@@ -195,13 +195,29 @@ class Response():
         """
 
         filepath = os.path.join(base_dir, path.lstrip('/'))
-
         print("[Response] serving the object at location {}".format(filepath))
-            #
-            #  TODO: implement the step of fetch the object file
-            #        store in the return value of content
-            #
-        return len(content), content
+        
+        try:
+            # Read the file from disk
+            with open(filepath, 'rb') as f:
+                content = f.read()
+            
+            # Return length and content
+            return len(content), content
+            
+        except FileNotFoundError:
+            print("[Response] File not found: {}".format(filepath))
+            # Return 404 content
+            error_content = b"<html><body><h1>404 Not Found</h1></body></html>"
+            return len(error_content), error_content
+        
+        except Exception as e:
+            print("[Response] Error reading file: {}".format(e))
+            import traceback
+            traceback.print_exc()
+            # Return 500 content
+            error_content = b"<html><body><h1>500 Internal Server Error</h1></body></html>"
+            return len(error_content), error_content
 
 
     def build_response_header(self, request):
@@ -216,37 +232,29 @@ class Response():
         reqhdr = request.headers
         rsphdr = self.headers
 
-        #Build dynamic headers
+        # Build dynamic headers
         headers = {
-                "Accept": "{}".format(reqhdr.get("Accept", "application/json")),
-                "Accept-Language": "{}".format(reqhdr.get("Accept-Language", "en-US,en;q=0.9")),
-                "Authorization": "{}".format(reqhdr.get("Authorization", "Basic <credentials>")),
-                "Cache-Control": "no-cache",
-                "Content-Type": "{}".format(self.headers['Content-Type']),
-                "Content-Length": "{}".format(len(self._content)),
-#                "Cookie": "{}".format(reqhdr.get("Cookie", "sessionid=xyz789")), #dummy cooki
-        #
-        # TODO prepare the request authentication
-        #
-	# self.auth = ...
-                "Date": "{}".format(datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")),
-                "Max-Forward": "10",
-                "Pragma": "no-cache",
-                "Proxy-Authorization": "Basic dXNlcjpwYXNz",  # example base64
-                "Warning": "199 Miscellaneous warning",
-                "User-Agent": "{}".format(reqhdr.get("User-Agent", "Chrome/123.0.0.0")),
-            }
+            "Accept": "{}".format(reqhdr.get("Accept", "application/json")),
+            "Accept-Language": "{}".format(reqhdr.get("Accept-Language", "en-US,en;q=0.9")),
+            "Authorization": "{}".format(reqhdr.get("Authorization", "Basic <credentials>")),
+            "Cache-Control": "no-cache",
+            "Content-Type": "{}".format(self.headers['Content-Type']),
+            "Content-Length": "{}".format(len(self._content)),
+            "Date": "{}".format(datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")),
+            "Max-Forward": "10",
+            "Pragma": "no-cache",
+            "Proxy-Authorization": "Basic dXNlcjpwYXNz",
+            "Warning": "199 Miscellaneous warning",
+            "User-Agent": "{}".format(reqhdr.get("User-Agent", "Chrome/123.0.0.0")),
+        }
 
-        # Header text alignment
-            #
-            #  TODO: implement the header building to create formated
-            #        header from the provied headers
-            #
-        #
-        # TODO prepare the request authentication
-        #
-	# self.auth = ...
-        return str(fmt_header).encode('utf-8')
+        # Build the HTTP header string
+        fmt_header = "HTTP/1.1 200 OK\r\n"
+        for key, value in headers.items():
+            fmt_header += "{}: {}\r\n".format(key, value)
+        fmt_header += "\r\n"  # Empty line separates headers from body
+
+        return fmt_header.encode('utf-8')
 
 
     def build_notfound(self):
@@ -278,17 +286,26 @@ class Response():
         """
 
         path = request.path
+        
+        # Handle root path
+        if path == '/':
+            path = '/login.html'
+        
+        # If path has no extension, assume .html
+        if '.' not in os.path.basename(path):
+            path = path + '.html'
+            print("[Response] No extension found, using: {}".format(path))
 
         mime_type = self.get_mime_type(path)
-        print("[Response] {} path {} mime_type {}".format(request.method, request.path, mime_type))
+        print("[Response] {} path {} mime_type {}".format(request.method, path, mime_type))
 
         base_dir = ""
 
-        #If HTML, parse and serve embedded objects
+        # If HTML, parse and serve embedded objects
         if path.endswith('.html') or mime_type == 'text/html':
-            base_dir = self.prepare_content_type(mime_type = 'text/html')
+            base_dir = self.prepare_content_type(mime_type='text/html')
         elif mime_type == 'text/css':
-            base_dir = self.prepare_content_type(mime_type = 'text/css')
+            base_dir = self.prepare_content_type(mime_type='text/css')
         #
         # TODO: add support objects
         #

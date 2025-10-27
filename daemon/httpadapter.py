@@ -80,46 +80,88 @@ class HttpAdapter:
         #: Response
         self.response = Response()
 
+
+
+    # POST /login HTTP/1.1
+    # Host: localhost:8000                          ← header
+    # User-Agent: Mozilla/5.0                       ← header
+    # Content-Type: application/x-www-form-urlencoded  ← header
+    # Cookie: session_id=abc123xyz789              ← header
+    # Content-Length: 35                            ← header
+
+    # username=admin&password=password              ← body (not a header!)
+
+
     def handle_client(self, conn, addr, routes):
-        """
-        Handle an incoming client connection.
-
-        This method reads the request from the socket, prepares the request object,
-        invokes the appropriate route handler if available, builds the response,
-        and sends it back to the client.
-
-        :param conn (socket): The client socket connection.
-        :param addr (tuple): The client's address.
-        :param routes (dict): The route mapping for dispatching requests.
-        """
-
-        # Connection handler.
+        print("haha")
+        
         self.conn = conn        
-        # Connection address.
         self.connaddr = addr
-        # Request handler
         req = self.request
-        # Response handler
         resp = self.response
 
-        # Handle the request
-        msg = conn.recv(1024).decode()
-        req.prepare(msg, routes)
+        try:
+            msg = conn.recv(1024).decode()
+            req.prepare(msg, routes)
 
-        # Handle request hook
-        if req.hook:
-            print("[HttpAdapter] hook in route-path METHOD {} PATH {}".format(req.hook._route_path,req.hook._route_methods))
-            req.hook(headers = "bksysnet",body = "get in touch")
-            #
-            # TODO: handle for App hook here
-            #
+            if req.hook:
+                print("[HttpAdapter] hook in route-path METHOD {} PATH {}".format(
+                    req.hook._route_path, req.hook._route_methods))
+                
+                result = req.hook(req.headers, req.body)
+                
+                # Handle dictionary responses from login()
+                if isinstance(result, dict):
+                    status = result.get('status', 200)
+                    headers = result.get('headers', {'Content-Type': 'text/html'})
+                    content = result.get('content', '')
+                    cookies = result.get('cookies', {})
+                    
+                    # Build HTTP response
+                    response = "HTTP/1.1 {} OK\r\n".format(status)
+                    for key, value in headers.items():
+                        response += "{}: {}\r\n".format(key, value)
+                    for cookie_name, cookie_value in cookies.items():
+                        response += "Set-Cookie: {}={}\r\n".format(cookie_name, cookie_value)
+                    response += "Content-Length: {}\r\n".format(len(content))
+                    response += "\r\n"
+                    response += content
+                    
+                    print("[HttpAdapter] Sending dynamic response with status {}".format(status))
+                    conn.sendall(response.encode('utf-8'))
+                    conn.close()
+                    return
+                else:
+                    resp = result
+            else:
+                print("[HttpAdapter] no hook found for PATH {}".format(req.path))
 
-        # Build response
-        response = resp.build_response(req)
-
-        #print(response)
-        conn.sendall(response)
-        conn.close()
+            response = resp.build_response(req)
+            
+            if isinstance(response, bytes):
+                conn.sendall(response)
+            else:
+                conn.sendall(response.encode('utf-8'))
+            
+            conn.close()
+            
+        except Exception as e:
+            print("[HttpAdapter] Error handling request: {}".format(e))
+            import traceback
+            traceback.print_exc()
+            
+            error_response = (
+                "HTTP/1.1 500 Internal Server Error\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: 21\r\n"
+                "\r\n"
+                "Internal Server Error"
+            )
+            try:
+                conn.sendall(error_response.encode('utf-8'))
+                conn.close()
+            except:
+                pass
 
     @property
     def extract_cookies(self, req, resp):
