@@ -1,2 +1,0 @@
-# MMT
-BTL MMT

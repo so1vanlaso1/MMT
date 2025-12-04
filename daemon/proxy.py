@@ -41,6 +41,8 @@ PROXY_PASS = {
     "app2.local": ('192.168.56.103', 9002),
 }
 
+_rr_idx = {}
+_rr_lock = threading.Lock()
 
 def forward_request(host, port, request):
     """
@@ -88,36 +90,18 @@ def resolve_routing_policy(hostname, routes):
     :params routes (dict): dictionary mapping hostnames and location.
     """
 
-    print(hostname)
-    proxy_map, policy = routes.get(hostname,('127.0.0.1:9000','round-robin'))
-    print(proxy_map)
-    print(policy)
+    proxy_map, policy = routes.get(hostname, ('127.0.0.1:9000', 'round-robin'))
+    target = proxy_map
 
-    proxy_host = ''
-    proxy_port = '9000'
-    if isinstance(proxy_map, list):
-        if len(proxy_map) == 0:
-            print("[Proxy] Empty resolved routing of hostname {}".format(hostname))
-            print("Empty proxy_map result")
-            # TODO: implement the error handling for non mapped host
-            #       the policy is design by team, but it can be 
-            #       basic default host in your self-defined system
-            # Use a dummy host to raise an invalid connection
-            proxy_host = '127.0.0.1'
-            proxy_port = '9000'
-        elif len(value) == 1:
-            proxy_host, proxy_port = proxy_map[0].split(":", 2)
-        #elif: # apply the policy handling 
-        #   proxy_map
-        #   policy
-        else:
-            # Out-of-handle mapped host
-            proxy_host = '127.0.0.1'
-            proxy_port = '9000'
-    else:
-        print("[Proxy] resolve route of hostname {} is a singulair to".format(hostname))
-        proxy_host, proxy_port = proxy_map.split(":", 2)
+    if isinstance(proxy_map, list) and len(proxy_map) >= 2 and (policy or '').lower() == 'round-robin':
+        with _rr_lock:
+            next_idx = _rr_idx.get(hostname, 0) % len(proxy_map)
+            _rr_idx[hostname] = next_idx + 1
+        target = proxy_map[next_idx]
+    elif isinstance(proxy_map, list):
+        target = proxy_map[0]
 
+    proxy_host, proxy_port = target.rsplit(':', 1)
     return proxy_host, proxy_port
 
 def handle_client(ip, port, conn, addr, routes):
@@ -138,38 +122,89 @@ def handle_client(ip, port, conn, addr, routes):
     :params addr (tuple): client address (IP, port).
     :params routes (dict): dictionary mapping hostnames and location.
     """
-
-    request = conn.recv(1024).decode()
-
-    # Extract hostname
-    for line in request.splitlines():
-        if line.lower().startswith('host:'):
-            hostname = line.split(':', 1)[1].strip()
-
-    print("[Proxy] {} at Host: {}".format(addr, hostname))
-
-    # Resolve the matching destination in routes and need conver port
-    # to integer value
-    resolved_host, resolved_port = resolve_routing_policy(hostname, routes)
     try:
-        resolved_port = int(resolved_port)
-    except ValueError:
-        print("Not a valid integer")
+        # Read full request including body
+        buffer = b""
+        while b"\r\n\r\n" not in buffer:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            buffer += chunk
+        
+        if not buffer:
+            conn.close()
+            return
+        
+        # Split headers and body
+        headers_part, body_part = buffer.split(b"\r\n\r\n", 1)
+        
+        # Parse Content-Length
+        content_length = 0
+        headers_str = headers_part.decode('iso-8859-1', errors='ignore')
+        hostname = None
+        
+        for line in headers_str.split('\r\n'):
+            if line.lower().startswith('host:'):
+                hostname = line.split(':', 1)[1].strip()
+            elif line.lower().startswith('content-length:'):
+                try:
+                    content_length = int(line.split(':', 1)[1].strip())
+                except ValueError:
+                    pass
+        
+        # Read remaining body if needed
+        while len(body_part) < content_length:
+            chunk = conn.recv(min(4096, content_length - len(body_part)))
+            if not chunk:
+                break
+            body_part += chunk
+        
+        # Reconstruct full request
+        request = (headers_part + b"\r\n\r\n" + body_part).decode('iso-8859-1', errors='ignore')
+        
+        if not hostname:
+            conn.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+            conn.close()
+            return
 
-    if resolved_host:
-        print("[Proxy] Host name {} is forwarded to {}:{}".format(hostname,resolved_host, resolved_port))
-        response = forward_request(resolved_host, resolved_port, request)        
-    else:
-        response = (
-            "HTTP/1.1 404 Not Found\r\n"
-            "Content-Type: text/plain\r\n"
-            "Content-Length: 13\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "404 Not Found"
-        ).encode('utf-8')
-    conn.sendall(response)
-    conn.close()
+        print("[Proxy] {} at Host: {}".format(addr, hostname))
+
+        # Resolve the matching destination in routes
+        resolved_host, resolved_port = resolve_routing_policy(hostname, routes)
+        try:
+            resolved_port = int(resolved_port)
+        except ValueError:
+            print("Not a valid integer")
+
+        if resolved_host:
+            print("[Proxy] Host name {} is forwarded to {}:{}".format(hostname, resolved_host, resolved_port))
+            response = forward_request(resolved_host, resolved_port, request)        
+        else:
+            response = (
+                "HTTP/1.1 404 Not Found\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: 13\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "404 Not Found"
+            ).encode('utf-8')
+        conn.sendall(response)
+        conn.close()
+    except Exception as e:
+        print("[Proxy] Error handling client {}: {}".format(addr, e))
+        try:
+            error_response = (
+                "HTTP/1.1 500 Internal Server Error\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: 21\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "500 Internal Server Error"
+            ).encode('utf-8')
+            conn.sendall(error_response)
+            conn.close()
+        except:
+            pass
 
 def run_proxy(ip, port, routes):
     """
@@ -199,6 +234,8 @@ def run_proxy(ip, port, routes):
             #        using multi-thread programming with the
             #        provided handle_client routine
             #
+            client_thread = threading.Thread(target=handle_client, args=(ip, port, conn, addr, routes))
+            client_thread.start()
     except socket.error as e:
       print("Socket error: {}".format(e))
 

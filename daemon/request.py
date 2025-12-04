@@ -65,10 +65,7 @@ class Request():
         self.routes = {}
         #: Hook point for routed mapped-path
         self.hook = None
-    #POST /login HTTP/1.1 to
-    # method = POST
-    # path = /login
-    # version = HTTP/1.1
+
     def extract_request_line(self, request):
         try:
             lines = request.splitlines()
@@ -78,13 +75,10 @@ class Request():
             if path == '/':
                 path = '/index.html'
         except Exception:
-            return None, None
+            return None, None, None
 
         return method, path, version
-        # 'Host: localhost:8000',
-        # 'User-Agent: Mozilla/5.0',
-        # 'Content-Type: application/x-www-form-urlencoded',
-        # 'Cookie: session_id=abc123',
+             
     def prepare_headers(self, request):
         """Prepares the given HTTP headers."""
         lines = request.split('\r\n')
@@ -111,39 +105,22 @@ class Request():
         
         if not routes == {}:
             self.routes = routes
-            self.hook = routes.get((self.method, self.path))
+
+            path_without_query = self.path.split('?', 1)[0] if '?' in self.path else self.path
+
+            self.hook = routes.get((self.method, path_without_query))
             #
             # self.hook manipulation goes here
             # ...
             #
-            if self.hook is not None:
-                print("[Request] hook found for {} {}".format(self.method, self.path))
-
-                if not callable(self.hook):
-                    print("[Request] hook is not callable")
-                    self.hook = None
-            else:
-                print("[Request] no hook found for {} {}".format(self.method, self.path))
 
         self.headers = self.prepare_headers(request)
+        self.cookies = self.parse_cookies()
 
-        if '\r\n\r\n' in request:
-            header_part, self.body = request.split('\r\n\r\n', 1)
-            content_length = self.prepare_content_length(self.body)
-            print ("[Request] body prepared with length {}".format(content_length))
-
-        else :
-            self.body = None
-            print ("[Request] no body found")
-        cookies_header = self.headers.get('cookie', '')
-
-        self.cookies = {}
-        if cookies_header:
-            for pair in cookies_header.split('; '):
-                if '=' in pair:
-                    key, value = pair.split('=', 1)
-                    self.cookies[key.strip()] = value.strip()
-        print("[Request] cookies parsed: {}".format(self.cookies))
+        if self.method == 'POST':
+            self.body = self.extract_body(request)
+        else:
+            self.body = ""
             #
             #  TODO: implement the cookie function here
             #        by parsing the header            #
@@ -151,36 +128,20 @@ class Request():
         return
 
     def prepare_body(self, data, files, json=None):
-
-        
-        #
-        # TODO prepare the request authentication
-        #
+        if data:
+            self.body = data
+        self.prepare_content_length(self.body)
 	# self.auth = ...
-
         return
 
 
     def prepare_content_length(self, body):
+        self.headers["Content-Length"] = "0"
         #
         # TODO prepare the request authentication
         #
 	# self.auth = ...
-        if self.headers is None:
-            self.headers = {}
-        if body is not None:
-            if isinstance(body, str):
-                length = len(body.encode('utf-8'))
-            elif isinstance(body, bytes):
-                length = len(body)
-            else:
-                length = 0
-            self.headers["Content-Length"] = str(length)
-        else :
-            self.headers["Content-Length"] = "0"
         return
-
-
 
 
     def prepare_auth(self, auth, url=""):
@@ -192,3 +153,36 @@ class Request():
 
     def prepare_cookies(self, cookies):
             self.headers["Cookie"] = cookies
+
+    def parse_cookies(self):
+        cookies = {}
+        cookie_header = self.headers.get("cookie", "")
+        if cookie_header:
+            for pair in cookie_header.split(";"):
+                if "=" in pair:
+                    key, value = pair.split("=", 1)
+                    cookies[key.strip()] = value.strip()
+        return cookies
+    
+    def extract_body(self, request):
+        try:
+            parts = request.split('\r\n\r\n', 1)
+            if len(parts) > 1:
+                print("[Request] Extracted body from request{}".format(parts[1]))
+                return parts[1]
+            else:
+                return ""
+        except Exception:
+            pass
+        return ""
+    
+    def parse_form_data(self):
+        """Parse form data from POST body."""
+        form_data = {}
+        if self.body:
+            for pair in self.body.split('&'):
+                if '=' in pair:
+                    key, value = pair.split('=', 1)
+                    # URL decode if needed
+                    form_data[key] = value.replace('+', ' ')
+        return form_data  

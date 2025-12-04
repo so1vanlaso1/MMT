@@ -20,6 +20,7 @@ raw URL paths and RESTful route definitions, and integrates with
 Request and Response objects to handle client-server communication.
 """
 
+import socket
 from .request import Request
 from .response import Response
 from .dictionary import CaseInsensitiveDict
@@ -80,106 +81,133 @@ class HttpAdapter:
         #: Response
         self.response = Response()
 
-
-
-    # POST /login HTTP/1.1
-    # Host: localhost:8000                          ← header
-    # User-Agent: Mozilla/5.0                       ← header
-    # Content-Type: application/x-www-form-urlencoded  ← header
-    # Cookie: session_id=abc123xyz789              ← header
-    # Content-Length: 35                            ← header
-
-    # username=admin&password=password              ← body (not a header!)
-
-
     def handle_client(self, conn, addr, routes):
-        print("haha")
-        
+        """
+        Handle an incoming client connection.
+
+        This method reads the request from the socket, prepares the request object,
+        invokes the appropriate route handler if available, builds the response,
+        and sends it back to the client.
+
+        :param conn (socket): The client socket connection.
+        :param addr (tuple): The client's address.
+        :param routes (dict): The route mapping for dispatching requests.
+        """
+
+        # Connection handler.
         self.conn = conn        
+        # Connection address.
         self.connaddr = addr
+        # Request handler
         req = self.request
+        # Response handler
         resp = self.response
 
+        
+        # Handle the request
         try:
-            msg = conn.recv(1024).decode()
+            buffer = b""
+            
+            # 1. Read until we have headers (Double CRLF)
+            while b"\r\n\r\n" not in buffer:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                buffer += chunk
+            
+            if not buffer:
+                print("[HttpAdapter] Empty request received from {}:{}".format(addr[0], addr[1]))
+                conn.close()
+                return
+
+            # 2. Extract Content-Length to know how much body to read
+            headers_part, body_part = buffer.split(b"\r\n\r\n", 1)
+            content_length = 0
+            
+            # Simple parsing to find Content-Length in the binary headers
+            # We decode just the headers to search for the string
+            try:
+                headers_str = headers_part.decode('utf-8', errors='ignore')
+                for line in headers_str.split('\r\n'):
+                    if line.lower().startswith('content-length:'):
+                        content_length = int(line.split(':')[1].strip())
+                        break
+            except Exception as e:
+                print(f"[HttpAdapter] Error parsing content length: {e}")
+
+            # 3. Read the rest of the body if we haven't received it all yet
+            while len(body_part) < content_length:
+                to_read = content_length - len(body_part)
+                # We read up to 4096 or exactly what's left, whichever is smaller
+                chunk = conn.recv(min(4096, to_read))
+                if not chunk:
+                    break
+                body_part += chunk
+
+            # Combine headers and full body back into a string for existing logic
+            msg = (headers_part + b"\r\n\r\n" + body_part).decode('utf-8')
             req.prepare(msg, routes)
 
+            public_path = [
+                '/login.html',
+                '/chat.html'
+                ]
+                
+            is_public = (
+                req.path in public_path or
+                req.path.startswith('/static/') or
+                req.path.startswith('/api/') or 
+                req.path.startswith('/images/')
+            )
+
+            # Handle request hook
             if req.hook:
-                print("[HttpAdapter] hook in route-path METHOD {} PATH {}".format(
-                    req.hook._route_path, req.hook._route_methods))
+                print("[HttpAdapter] hook in route-path METHOD {} PATH {}".format(req.hook._route_path,req.hook._route_methods))
                 
-                result = req.hook(req.headers, req.body)
+                hook_result = req.hook(headers=str(req.headers), body = req.body)
                 
-                # Handle dictionary responses from login()
-                if isinstance(result, dict):
-                    status = result.get('status', 200)
-                    headers = result.get('headers', {'Content-Type': 'text/html'})
-                    content = result.get('content', '')
-                    cookies = result.get('cookies', {})
-                    
-                    # Build HTTP response
-                    response = "HTTP/1.1 {} OK\r\n".format(status)
-                    for key, value in headers.items():
-                        response += "{}: {}\r\n".format(key, value)
-                    for cookie_name, cookie_value in cookies.items():
-                        response += "Set-Cookie: {}={}\r\n".format(cookie_name, cookie_value)
-                    response += "Content-Length: {}\r\n".format(len(content))
-                    response += "\r\n"
-                    response += content
-                    
-                    print("[HttpAdapter] Sending dynamic response with status {}".format(status))
-                    conn.sendall(response.encode('utf-8'))
+
+                if hook_result is not None:
+                    response = hook_result.encode('utf-8')
+                    print("[HttpAdapter] Hook processed for {}".format(response))
+                    conn.sendall(response)
+                    print("[HttpAdapter] Hook response sent to {}:{}".format(addr[0], addr[1]))
+                    conn.shutdown(socket.SHUT_WR)
+                    print("[HttpAdapter] Connection to {}:{} closed after hook".format(addr[0], addr[1]))
                     conn.close()
                     return
-                else:
-                    resp = result
+            elif req.method == 'POST' and req.path == '/login':
+                print("[HttpAdapter] Handling login POST request")
+                response = self.handle_login(req, resp)
+            elif (req.path == '/index.html' or req.path == '/') and not is_public:
+                print("[HttpAdapter] Handling protected route request")
+                response = self.handle_protected_route(req, resp)
             else:
-                print("[HttpAdapter] no hook found for PATH {}".format(req.path))
+                print("[HttpAdapter] Handling general request")
+                response = resp.build_response(req)
+                #
+                # TODO: handle for App hook here
+                #
 
-            response = resp.build_response(req)
-            
-            if isinstance(response, bytes):
-                conn.sendall(response)
-            else:
-                conn.sendall(response.encode('utf-8'))
-            
-            conn.close()
-            
+            # Build response
         except Exception as e:
-            print("[HttpAdapter] Error handling request: {}".format(e))
-            import traceback
-            traceback.print_exc()
-            
-            error_response = (
-                "HTTP/1.1 500 Internal Server Error\r\n"
-                "Content-Type: text/plain\r\n"
-                "Content-Length: 21\r\n"
-                "\r\n"
-                "Internal Server Error"
-            )
-            try:
-                conn.sendall(error_response.encode('utf-8'))
-                conn.close()
-            except:
-                pass
+            print(f"[HttpAdapter] Error handling client {addr}: {e}")
+            response = self.build_error_response(500, "Internal Server Error")
 
-    @property
-    def extract_cookies(self, req, resp):
+            #print(response)
+        conn.sendall(response)
+        conn.close()
+        
+
+    def extract_cookies(self, req):
         """
         Build cookies from the :class:`Request <Request>` headers.
 
         :param req:(Request) The :class:`Request <Request>` object.
-        :param resp: (Response) The res:class:`Response <Response>` object.
         :rtype: cookies - A dictionary of cookie key-value pairs.
         """
-        cookies = {}
-        for header in headers:
-            if header.startswith("Cookie:"):
-                cookie_str = header.split(":", 1)[1].strip()
-                for pair in cookie_str.split(";"):
-                    key, value = pair.strip().split("=")
-                    cookies[key] = value
-        return cookies
+        
+        return req.cookies
 
     def build_response(self, req, resp):
         """Builds a :class:`Response <Response>` object 
@@ -191,51 +219,23 @@ class HttpAdapter:
         response = Response()
 
         # Set encoding.
-        response.encoding = get_encoding_from_headers(response.headers)
+        response.encoding = 'utf-8'
         response.raw = resp
-        response.reason = response.raw.reason
+        response.reason = getattr(response.raw, 'reason', 'OK')
 
         if isinstance(req.url, bytes):
-            response.url = req.url.decode("utf-8")
+            response.url = req.url.decode('utf-8')
         else:
             response.url = req.url
+        
+        response.cookies = self.extract_cookies(req)
 
-        # Add new cookies from the server.
-        response.cookies = extract_cookies(req)
-
-        # Give the Response some context.
         response.request = req
         response.connection = self
 
         return response
 
-    # def get_connection(self, url, proxies=None):
-        # """Returns a url connection for the given URL. 
 
-        # :param url: The URL to connect to.
-        # :param proxies: (optional) A Requests-style dictionary of proxies used on this request.
-        # :rtype: int
-        # """
-
-        # proxy = select_proxy(url, proxies)
-
-        # if proxy:
-            # proxy = prepend_scheme_if_needed(proxy, "http")
-            # proxy_url = parse_url(proxy)
-            # if not proxy_url.host:
-                # raise InvalidProxyURL(
-                    # "Please check proxy URL. It is malformed "
-                    # "and could be missing the host."
-                # )
-            # proxy_manager = self.proxy_manager_for(proxy)
-            # conn = proxy_manager.connection_from_url(url)
-        # else:
-            # # Only scheme should be lower case
-            # parsed = urlparse(url)
-            # url = parsed.geturl()
-            # conn = self.poolmanager.connection_from_url(url)
-
-        # return conn
 
 
     def add_headers(self, request):
@@ -271,3 +271,78 @@ class HttpAdapter:
             headers["Proxy-Authorization"] = (username, password)
 
         return headers
+    
+    def handle_login(self, req, resp):
+        """
+        Handle login requests.
+
+        :param req: The incoming :class:`Request <Request>`.
+        :param resp: The :class:`Response <Response>` object to build the reply.
+        :rtype: bytes - The raw HTTP response bytes.
+        """
+        # Dummy login logic for demonstration
+        form_data = req.parse_form_data()
+        username = form_data.get('username', '')
+        password = form_data.get('password', '')
+
+        print ("[HttpAdapter] Login attempt with username: {}, password: {}".format(username, password))
+
+        if username == 'admin' and password == 'admin':
+            resp.status_code = 200
+            resp.set_cookie('auth', 'true')
+            req.path = '/index.html'
+            print("[HttpAdapter] Login successful for user: {}".format(username))
+            return resp.build_response(req)
+        else:
+            return self.build_error_response(401, "Unauthorized")
+        
+    def handle_protected_route(self, req, resp):
+        """
+        Handle access to protected routes.
+
+        :param req: The incoming :class:`Request <Request>`.
+        :param resp: The :class:`Response <Response>` object to build the reply.
+        :rtype: bytes - The raw HTTP response bytes.
+        """
+        cookies = req.cookies
+        auth_cookie = cookies.get('auth', '')
+
+        if auth_cookie == 'true':
+            if req.path == '/':
+                req.path = '/index.html'
+            return resp.build_response(req)
+        else:
+            return self.build_error_response(401, "Unauthorized")
+        
+    def build_error_response(self, status_code, message):
+        """
+        Build an error response.
+
+        :param status_code: HTTP status code.
+        :param message: Error message.
+        :rtype: bytes - The raw HTTP response bytes.
+        """
+        if status_code == 401:
+            response_body = """
+            <html><body>
+            <h1>401 Unauthorized</h1>
+            <p>{}</p>
+            <a href="/login.html">Login Here</a>
+            </body></html>
+            """.format(message)
+        else:
+            response_body = """
+            <html><body>
+            <h1>{} {}</h1>
+            <p>An error occurred: {}</p>
+            </body></html>
+            """.format(status_code, message, message)
+        
+        response_text = """HTTP/1.1 {} {}
+            Content-Type: text/html
+            Content-Length: {}
+            Connection: close
+
+            {}""".format(status_code, message, len(response_body), response_body)
+                    
+        return response_text.encode('utf-8')

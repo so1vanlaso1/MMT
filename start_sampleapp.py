@@ -45,32 +45,7 @@ def login(headers="guest", body="anonymous"):
     :param headers (str): The request headers or user identifier.
     :param body (str): The request body or login payload.
     """
-    print("sampleapp login called")
-
-    params = {}
-    for pair in body.split("&"):
-        key, value = pair.split("=",1)
-        params[key] = value
-    
-    username = params.get("username", "")
-    password = params.get("password", "")
-
     print("[SampleApp] Logging in {} to {}".format(headers, body))
-
-    if username == "admin" and password == "password":
-        return {
-            'status': 200,
-            'cookies': {'session_id': 'abc123xyz789'},  # Generate session ID
-            'headers': {'Content-Type': 'text/html'},
-            'content': '<html><body><h1>Login Successful!</h1><a href="/dashboard">Go to Dashboard</a></body></html>'
-        }
-    else:
-        # Failure
-        return {
-            'status': 401,
-            'headers': {'Content-Type': 'text/html'},
-            'content': '<html><body><h1>Login Failed!</h1><p>Invalid credentials</p><a href="/login.html">Try Again</a></body></html>'
-        }
 
 @app.route('/hello', methods=['PUT'])
 def hello(headers, body):
