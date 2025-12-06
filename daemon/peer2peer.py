@@ -22,6 +22,7 @@ class peer2peer:
         self.setup_own_routes()
         self.running = True 
         self.heartbeat_thread = None
+        self.cookies = {}
 
     def register_tracker(self):
         try:
@@ -33,11 +34,17 @@ class peer2peer:
             }
             print(f"Payload: {payload}")
             data = json.dumps(payload).encode('utf-8')
+            if self.cookies and self.cookies.get("auth", "") == "true":
+                print("Adding auth cookie to request headers")
+                req_headers = {
+                    "Content-Type": "application/json",
+                    "Cookie": f"auth={self.cookies.get('auth', '')}"
+                }
             req = urllib.request.Request(
                 method="POST",
                 url=f"{self.tracker_url}/submit-info",
                 data=data,
-                headers={"Content-Type": "application/json"}
+                headers=req_headers if self.cookies and self.cookies.get("auth", "") == "true" else {"Content-Type": "application/json"}
             )
             print(f"Request: {req.full_url}, Data: {data}")
 
@@ -54,10 +61,16 @@ class peer2peer:
         # Register with the tracker
     def get_peers_list(self):
         try:
+            if self.cookies and self.cookies.get("auth", "") == "true":
+                print("Adding auth cookie to request headers for get_peers_list")
+                req_headers = {
+                    "Content-Type": "application/json",
+                    "Cookie": f"auth={self.cookies.get('auth', '')}"
+                }
             req = urllib.request.Request(
                 method="GET",
                 url=f"{self.tracker_url}/get-list",
-                headers={"Content-Type": "application/json"}
+                headers=req_headers if self.cookies and self.cookies.get("auth", "") == "true" else {"Content-Type": "application/json"}
             )
 
             with urllib.request.urlopen(req, timeout=5) as response:
@@ -92,11 +105,17 @@ class peer2peer:
                 "peer_id": self.peer_id
             }
             data = json.dumps(payload).encode('utf-8')
+            if self.cookies and self.cookies.get("auth", "") == "true":
+                print("Adding auth cookie to request headers for unregister")
+                req_headers = {
+                    "Content-Type": "application/json",
+                    "Cookie": f"auth={self.cookies.get('auth', '')}"
+                }
             req = urllib.request.Request(
                 method="POST",
                 url=f"{self.tracker_url}/remove-peer",
                 data=data,
-                headers={"Content-Type": "application/json"}
+                headers=req_headers if self.cookies and self.cookies.get("auth", "") == "true" else {"Content-Type": "application/json"}
             )
 
             with urllib.request.urlopen(req, timeout=5) as response:
@@ -167,7 +186,7 @@ class peer2peer:
                     )
                 )
             
-        @self.app.route('/send-broadcast-message', methods=['POST'])
+        @self.app.route('/broadcast-peer', methods=['POST'])
         def broad_cast_received(headers="", body=""):
             try:
                 if body:
@@ -220,7 +239,7 @@ class peer2peer:
                     )
                 )
             
-        @self.app.route('/send-direct-messages', methods=['POST'])
+        @self.app.route('/send-peer', methods=['POST'])
         def received_direct_messages(headers="", body=""):
             try:
                 data = {}
@@ -318,7 +337,7 @@ class peer2peer:
                 data = json.dumps(payload).encode('utf-8')
                 req = urllib.request.Request(
                     method="POST",
-                    url=f"http://{peer_info['ip']}:{peer_info['port']}/send-broadcast-message",
+                    url=f"http://{peer_info['ip']}:{peer_info['port']}/broadcast-peer",
                     data=data,
                     headers={"Content-Type": "application/json"}
                 )
@@ -347,7 +366,7 @@ class peer2peer:
             data = json.dumps(payload).encode('utf-8')
             req = urllib.request.Request(
                 method="POST",
-                url=f"http://{peer_info['ip']}:{peer_info['port']}/send-direct-messages",
+                url=f"http://{peer_info['ip']}:{peer_info['port']}/send-peer",
                 data=data,
                 headers={"Content-Type": "application/json"}
             )
@@ -372,6 +391,30 @@ class peer2peer:
             if peer_id != self.peer_id:
                 self.connect_to_peers(peer_ip, peer_port, peer_id)
     
+    def find_some_peers_and_connect(self, peer_name=""):
+        """Connect to specific peer(s) by name"""
+        self.connected_peers = {}
+        all_peers = self.get_peers_list()
+        if not all_peers:
+            print("No peers found from tracker.")
+            return
+
+        found_any = False
+        for peer_id, peer_info in self.connected_peers.items():
+            # Check if this peer matches the requested name
+            if peer_info.get("name", "") == peer_name:
+                peer_ip = peer_info.get("ip", "")
+                peer_port = peer_info.get("port", 0)
+                
+                # Don't connect to ourselves
+                if peer_id != self.peer_id:
+                    print(f"Connecting to peer '{peer_name}' at {peer_id}")
+                    self.connect_to_peers(peer_ip, peer_port, peer_id)
+                found_any = True
+    
+        if not found_any:
+            print(f"No peer found with name '{peer_name}'")
+
     def list_peers(self):
         """List connected peers"""
         if not self.connected_peers:
@@ -438,13 +481,21 @@ class peer2peer:
     def ping_tracker(self):
         try:
             body = json.dumps({"peer_id": self.peer_id}).encode('utf-8')
+            if self.cookies and self.cookies.get("auth", "") == "true":
+                print("Adding auth cookie to request headers for ping")
+                req_headers = {
+                    "Content-Type": "application/json",
+                    "Cookie": f"auth={self.cookies.get('auth', '')}"
+                }
             req = urllib.request.Request(
                 method="POST",
                 url=f"{self.tracker_url}/ping",
-                headers={"Content-Type": "application/json"},
+                headers=req_headers if self.cookies and self.cookies.get("auth", "") == "true" else {"Content-Type": "application/json"},
                 data=body
             )
             print(req.data)
+
+            self.find_all_peers_and_connect()
 
             with urllib.request.urlopen(req, timeout=5) as response:
                 if response.getcode() == 200:

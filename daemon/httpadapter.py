@@ -150,7 +150,6 @@ class HttpAdapter:
 
             public_path = [
                 '/login.html',
-                '/chat.html'
                 ]
                 
             is_public = (
@@ -168,14 +167,17 @@ class HttpAdapter:
                 
 
                 if hook_result is not None:
-                    response = hook_result.encode('utf-8')
-                    print("[HttpAdapter] Hook processed for {}".format(response))
-                    conn.sendall(response)
-                    print("[HttpAdapter] Hook response sent to {}:{}".format(addr[0], addr[1]))
-                    conn.shutdown(socket.SHUT_WR)
-                    print("[HttpAdapter] Connection to {}:{} closed after hook".format(addr[0], addr[1]))
-                    conn.close()
-                    return
+                    if req.hook._route_path == '/login' and req.hook._route_methods == ['POST']:
+                        response = hook_result.encode('utf-8')
+                        print("[HttpAdapter] Hook processed for login {}".format(response))  
+                    else:
+                        if req.cookies.get('auth','') == 'true':
+                            response = hook_result.encode('utf-8')
+                            print("[HttpAdapter] Hook processed for protected route {}".format(response))
+                        else:
+                            response = self.build_error_response(401, "Unauthorized")
+                            print("[HttpAdapter] Unauthorized access attempt to protected route via hook")
+
             elif req.method == 'POST' and req.path == '/login':
                 print("[HttpAdapter] Handling login POST request")
                 response = self.handle_login(req, resp)
@@ -295,7 +297,32 @@ class HttpAdapter:
             return resp.build_response(req)
         else:
             return self.build_error_response(401, "Unauthorized")
-        
+    
+    def handle_loginchat(self, req, resp):
+        """
+        Handle login requests.
+
+        :param req: The incoming :class:`Request <Request>`.
+        :param resp: The :class:`Response <Response>` object to build the reply.
+        :rtype: bytes - The raw HTTP response bytes.
+        """
+        # Dummy login logic for demonstration
+        form_data = req.parse_form_data()
+        username = form_data.get('username', '')
+        password = form_data.get('password', '')
+
+        print ("[HttpAdapter] Login attempt with username: {}, password: {}".format(username, password))
+
+        if username == 'admin' and password == 'admin':
+            resp.status_code = 200
+            resp.set_cookie('auth', 'true')
+            req.path = '/index.html'
+            print("[HttpAdapter] Login successful for user: {}".format(username))
+            return resp.build_response(req)
+        else:
+            return self.build_error_response(401, "Unauthorized")
+
+
     def handle_protected_route(self, req, resp):
         """
         Handle access to protected routes.
@@ -327,7 +354,8 @@ class HttpAdapter:
             <html><body>
             <h1>401 Unauthorized</h1>
             <p>{}</p>
-            <a href="/login.html">Login Here</a>
+            <a href="/login.html">Login Here for Access /index.html</a>
+            <a href="/loginchat.html">Login here toGo to Chat Room</a>
             </body></html>
             """.format(message)
         else:
