@@ -12,22 +12,33 @@ class PeerChatUI:
     def __init__(self, root):
         self.root = root
         self.root.title("P2P Chat Client")
-        self.root.geometry("1000x1000")
+        self.root.geometry("1000x800")
         
         self.peer = None
         self.running = False
         self.authenticated = False
         self.username = None
         self.cookies = {}
+        self.current_channel = "general"  # Default channel
+        self.joined_channels = ["general"]  # Track joined channels
+        
+        # Store messages per channel
+        self.channel_messages = {
+            "general": [],
+            "tech": [],
+            "random": []
+        }
         
         # Setup UI
         self.setup_login_frame()
         self.setup_connection_frame()
+        self.setup_channel_frame()
         self.setup_chat_frame()
         self.setup_peers_frame()
         
         # Initially hide connection/chat frames until logged in
         self.connection_frame.pack_forget()
+        self.channel_frame.pack_forget()
         self.chat_frame.pack_forget()
         self.peers_frame.pack_forget()
         
@@ -124,6 +135,7 @@ class PeerChatUI:
         """Hide login frame and show chat interface"""
         self.login_frame.pack_forget()
         self.connection_frame.pack(fill='x', padx=10, pady=5)
+        self.channel_frame.pack(fill='x', padx=10, pady=5)
         self.chat_frame.pack(fill='both', expand=True, padx=10, pady=5)
         self.peers_frame.pack(fill='x', padx=10, pady=5)
         self.root.title(f"P2P Chat Client - {self.username}")
@@ -154,13 +166,42 @@ class PeerChatUI:
         # Status
         self.status_label = ttk.Label(self.connection_frame, text="Status: Disconnected", foreground="red")
         self.status_label.grid(row=2, column=0, columnspan=4, sticky='w', padx=5)
+    
+    def setup_channel_frame(self):
+        """Channel selection frame"""
+        self.channel_frame = ttk.LabelFrame(self.root, text="Channels", padding=10)
+        
+        ttk.Label(self.channel_frame, text="Active Channel:").grid(row=0, column=0, sticky='w', padx=5)
+        self.channel_label = ttk.Label(self.channel_frame, text="general", foreground="green", font=('Arial', 10, 'bold'))
+        self.channel_label.grid(row=0, column=1, sticky='w', padx=5)
+        
+        # Channel buttons
+        btn_frame = ttk.Frame(self.channel_frame)
+        btn_frame.grid(row=1, column=0, columnspan=4, pady=10)
+        
+        self.general_btn = ttk.Button(btn_frame, text="📢 General (Broadcast)", 
+                                      command=lambda: self.switch_channel("general"), 
+                                      state='disabled')
+        self.general_btn.pack(side='left', padx=5)
+        
+        self.tech_btn = ttk.Button(btn_frame, text="💻 Tech", 
+                                   command=lambda: self.join_channel("tech"))
+        self.tech_btn.pack(side='left', padx=5)
+        
+        self.random_btn = ttk.Button(btn_frame, text="🎲 Random", 
+                                     command=lambda: self.join_channel("random"))
+        self.random_btn.pack(side='left', padx=5)
+        
+        # Channel status
+        self.channel_status = ttk.Label(self.channel_frame, text="Joined: general", foreground="blue")
+        self.channel_status.grid(row=2, column=0, columnspan=4, sticky='w', padx=5)
         
     def setup_chat_frame(self):
         """Chat messages frame"""
         self.chat_frame = ttk.LabelFrame(self.root, text="Messages", padding=10)
         
         # Messages display
-        self.messages_text = scrolledtext.ScrolledText(self.chat_frame, height=20, state='disabled')
+        self.messages_text = scrolledtext.ScrolledText(self.chat_frame, height=15, state='disabled')
         self.messages_text.pack(fill='both', expand=True, pady=5)
         
         # Message input frame
@@ -171,7 +212,7 @@ class PeerChatUI:
         self.message_input.pack(side='left', fill='x', expand=True, padx=(0, 5))
         self.message_input.bind('<Return>', lambda e: self.send_message())
         
-        ttk.Button(input_frame, text="Send Broadcast", command=self.send_message).pack(side='left', padx=2)
+        ttk.Button(input_frame, text="Send to Channel", command=self.send_message).pack(side='left', padx=2)
         ttk.Button(input_frame, text="Send Direct", command=self.send_direct).pack(side='left', padx=2)
         
     def setup_peers_frame(self):
@@ -193,7 +234,7 @@ class PeerChatUI:
             self.connect()
         else:
             self.disconnect()
-            
+    
     def connect(self):
         """Start P2P peer"""
         try:
@@ -207,9 +248,9 @@ class PeerChatUI:
             
             # Create peer instance
             self.peer = peer2peer(tracker_url=tracker, port=port, peer_name=name)
-            self.peer.cookies = self.cookies  # Set cookies for tracker communication
+            self.peer.cookies = self.cookies
             
-            # Register with tracker
+            # Register with tracker (automatically joins general channel)
             if not self.peer.register_tracker():
                 messagebox.showerror("Error", "Failed to register with tracker")
                 return
@@ -225,6 +266,9 @@ class PeerChatUI:
             self.server_thread = threading.Thread(target=run_peer_server, daemon=True)
             self.server_thread.start()
             
+            # Wait for server to start
+            time.sleep(2)
+            
             # Start heartbeat/discovery
             self.heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
             self.heartbeat_thread.start()
@@ -233,17 +277,105 @@ class PeerChatUI:
             self.message_thread = threading.Thread(target=self.message_loop, daemon=True)
             self.message_thread.start()
             
-            # Discover initial peers
-            self.peer.find_all_peers_and_connect()
+            # Discover initial peers in general channel
+            self.peer.find_all_peers_and_connect("general")
             
             # Update UI
             self.status_label.config(text=f"Status: Connected as {name} on port {port}", foreground="green")
             self.connect_btn.config(text="Disconnect")
-            self.add_message("System", f"Connected to P2P network as {name}")
+            self.add_message_to_channel("general", "System", f"Connected to P2P network as {name}")
+            self.add_message_to_channel("general", "System", f"Joined channel: general (broadcast)")
+            self.display_channel_messages()
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to connect: {e}")
             self.running = False
+    
+    def join_channel(self, channel_name):
+        """Join a specific channel"""
+        if not self.running or not self.peer:
+            messagebox.showwarning("Warning", "Not connected to P2P network")
+            return
+        
+        if channel_name in self.joined_channels:
+            self.switch_channel(channel_name)
+            return
+        
+        try:
+            # Use peer's join_channel method
+            if self.peer.join_channel(channel_name):
+                self.joined_channels.append(channel_name)
+                self.add_message_to_channel(channel_name, "System", f"Joined channel: {channel_name}")
+                self.switch_channel(channel_name)
+                self.update_channel_status()
+            else:
+                messagebox.showerror("Error", f"Failed to join channel {channel_name}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to join channel: {e}")
+            print(f"Join channel error: {e}")
+    
+    def switch_channel(self, channel_name):
+        """Switch active viewing channel and load its messages"""
+        if channel_name not in self.joined_channels:
+            messagebox.showwarning("Warning", f"You haven't joined {channel_name} yet")
+            return
+        
+        # Save current scroll position (optional)
+        old_channel = self.current_channel
+        
+        # Switch channel
+        self.current_channel = channel_name
+        self.channel_label.config(text=channel_name)
+        
+        # Update button states
+        self.general_btn.config(state='disabled' if channel_name == 'general' else 'normal')
+        self.tech_btn.config(state='disabled' if channel_name == 'tech' else 'normal')
+        self.random_btn.config(state='disabled' if channel_name == 'random' else 'normal')
+        
+        # Display messages for the new channel
+        self.display_channel_messages()
+        
+        # Add system message about channel switch
+        self.add_message_to_channel(channel_name, "System", f"Switched to channel: {channel_name}")
+        self.display_channel_messages()
+        
+        # Refresh peers for this channel
+        self.refresh_peers()
+    
+    def update_channel_status(self):
+        """Update channel status label"""
+        channels_str = ", ".join(self.joined_channels)
+        self.channel_status.config(text=f"Joined: {channels_str}")
+    
+    def display_channel_messages(self):
+        """Display all messages for the current channel"""
+        self.messages_text.config(state='normal')
+        self.messages_text.delete(1.0, tk.END)
+        
+        # Get messages for current channel
+        messages = self.channel_messages.get(self.current_channel, [])
+        
+        for msg in messages:
+            self.messages_text.insert(tk.END, msg + "\n")
+        
+        self.messages_text.see(tk.END)
+        self.messages_text.config(state='disabled')
+    
+    def add_message_to_channel(self, channel, sender, message):
+        """Add message to specific channel's message history"""
+        timestamp = time.strftime("%H:%M:%S")
+        formatted_message = f"[{timestamp}] {sender}: {message}"
+        
+        # Initialize channel messages if not exists
+        if channel not in self.channel_messages:
+            self.channel_messages[channel] = []
+        
+        # Add message to channel history
+        self.channel_messages[channel].append(formatted_message)
+        
+        # If this is the current channel, update display
+        if channel == self.current_channel:
+            self.display_channel_messages()
             
     def disconnect(self):
         """Stop P2P peer"""
@@ -254,13 +386,22 @@ class PeerChatUI:
         self.running = False
         self.status_label.config(text="Status: Disconnected", foreground="red")
         self.connect_btn.config(text="Connect")
-        self.add_message("System", "Disconnected from P2P network")
+        self.add_message_to_channel("general", "System", "Disconnected from P2P network")
+        
+        # Reset channels
+        self.joined_channels = ["general"]
+        self.current_channel = "general"
+        self.update_channel_status()
+        self.display_channel_messages()
         
     def heartbeat_loop(self):
         """Background thread for peer discovery and heartbeat"""
         while self.running:
             try:
-                self.peer.get_peers_list()
+                # Refresh peers for all joined channels
+                for channel in self.joined_channels:
+                    self.peer.get_peers_list(channel)
+                
                 self.peer.ping_tracker()
                 self.root.after(0, self.update_peers_list)
             except Exception as e:
@@ -276,9 +417,15 @@ class PeerChatUI:
                         msg_type = msg.get('type', 'unknown')
                         from_name = msg.get('from_name', 'Unknown')
                         message = msg.get('message', '')
+                        msg_channel = msg.get('channel', 'general')
                         
-                        prefix = "[Direct]" if msg_type == "direct" else "[Broadcast]"
-                        self.root.after(0, self.add_message, f"{prefix} {from_name}", message)
+                        # Filter messages based on type
+                        if msg_type == "direct":
+                            # Direct messages always go to general channel
+                            self.root.after(0, self.add_message_to_channel, "general", f"[Direct] {from_name}", message)
+                        elif msg_type == "broadcast":
+                            # Broadcast messages go to their specific channel
+                            self.root.after(0, self.add_message_to_channel, msg_channel, f"[{msg_channel}] {from_name}", message)
                     
                     self.peer.messages.clear()
             except Exception as e:
@@ -286,7 +433,7 @@ class PeerChatUI:
             time.sleep(0.5)
             
     def send_message(self):
-        """Send broadcast message"""
+        """Send message to current channel"""
         if not self.running or not self.peer:
             messagebox.showwarning("Warning", "Not connected to P2P network")
             return
@@ -296,14 +443,19 @@ class PeerChatUI:
             return
         
         try:
-            self.peer.send_broadcast_message(message)
-            self.add_message("You [Broadcast]", message)
+            # Send broadcast to current channel
+            self.peer.send_broadcast_message(message, self.current_channel)
+            self.add_message_to_channel(self.current_channel, f"You [{self.current_channel}]", message)
             self.message_input.delete(0, tk.END)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send message: {e}")
             
     def send_direct(self):
-        """Send direct message to selected peer"""
+        """Send direct message to selected peer (only in general channel)"""
+        if self.current_channel != "general":
+            messagebox.showwarning("Warning", "Direct messages can only be sent from General channel")
+            return
+            
         if not self.running or not self.peer:
             messagebox.showwarning("Warning", "Not connected to P2P network")
             return
@@ -321,32 +473,26 @@ class PeerChatUI:
         
         try:
             self.peer.send_direct_message(peer_id, message)
-            self.add_message(f"You [Direct to {peer_id}]", message)
+            self.add_message_to_channel("general", f"You [Direct to {peer_id}]", message)
             self.message_input.delete(0, tk.END)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send direct message: {e}")
             
     def refresh_peers(self):
-        """Manually refresh peers list"""
+        """Manually refresh peers list for current channel"""
         if self.peer:
-            self.peer.get_peers_list()
+            self.peer.get_peers_list(self.current_channel)
             self.update_peers_list()
             
     def update_peers_list(self):
-        """Update peers listbox"""
+        """Update peers listbox for current channel"""
         self.peers_listbox.delete(0, tk.END)
         if self.peer and self.peer.connected_peers:
-            for peer_id, info in self.peer.connected_peers.items():
+            # Get peers from current channel
+            channel_peers = self.peer.connected_peers.get(self.current_channel, {})
+            for peer_id, info in channel_peers.items():
                 name = info.get('name', 'Unknown')
                 self.peers_listbox.insert(tk.END, f"{name} - {peer_id}")
-                
-    def add_message(self, sender, message):
-        """Add message to chat display"""
-        self.messages_text.config(state='normal')
-        timestamp = time.strftime("%H:%M:%S")
-        self.messages_text.insert(tk.END, f"[{timestamp}] {sender}: {message}\n")
-        self.messages_text.see(tk.END)
-        self.messages_text.config(state='disabled')
         
     def on_closing(self):
         """Handle window close"""

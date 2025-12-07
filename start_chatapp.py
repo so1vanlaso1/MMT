@@ -7,25 +7,23 @@ from daemon.weaprous import WeApRous
 
 app = WeApRous()
 
-peers = {}
-# peers = {
-#     "127.0.0.1:5001": {
-#         'ip': '127.0.0.1',
-#         'port': 5001,
-#         'peer_id': '127.0.0.1:5001',
-#         'last_seen': 169xxxxxxx.x   # timestamp (float)
-#     },
-#     "127.0.0.1:5002": {
-#         'ip': '127.0.0.1',
-#         'port': 5002,
-#         'peer_id': '127.0.0.1:5002',
-#         'last_seen': 169xxxxxxx.x
-#     }
-# }
 
 
 
-channels = {}
+channels = {
+    "general": {
+        "name": "broadcast",
+        "peers": {}  # {peer_id: {ip, port, name, joined_at}}
+    },
+    "tech": {
+        "name": "tech",
+        "peers": {}
+    },
+    "random": {
+        "name": "random",
+        "peers": {}
+    }
+}
 
 
 accounts = {
@@ -65,7 +63,7 @@ def login(headers="", body=""):
             "Content-Type: application/json\r\n"
             "Set-Cookie: auth=true; Path=/\r\n"                # ← ADD AUTH COOKIE
             "Content-Length: {}\r\n"
-            "\r\n"
+            "\r\n"  
             "{}".format(len(response), response)
         )
     except Exception as e:
@@ -89,6 +87,7 @@ def submit_peer_info(headers="", body=""):
         peer_ip = data.get("ip")
         peer_port = data.get("port")
         peer_name = data.get("name", "unknown")
+        peer_channel = data.get("channel", "general")
         timestamp = time.time()
         peer_id = f"{peer_ip}:{peer_port}"
         if not peer_id or not peer_ip or not peer_port:
@@ -106,17 +105,17 @@ def submit_peer_info(headers="", body=""):
         if peer_id and peer_ip and peer_port:
             #add lock here for thread safety if needed
             with peers_lock:
-                peers[peer_id] = {
+                channels[peer_channel]["peers"][peer_id] = {
                     "ip": peer_ip,
                     "port": peer_port,
                     "name": peer_name,
-                    "last_seen": timestamp
+                    "last_seen": timestamp,
                 }
                 print(f"[SampleApp] Registered peer {peer_id} at {peer_ip}:{peer_port}")
 
             response = json.dumps({
                 "status": "success",
-                "message": f"Peer {peer_id} registered successfully.",
+                "message": f"Peer {peer_id} registered successfully to channel {peer_channel}.",
                 "peer_id": peer_id
             })
             print(f"[SampleApp] Registered peer successfully: {response}")
@@ -145,16 +144,62 @@ def submit_peer_info(headers="", body=""):
             "message": "An error occurred while submitting peer information."
         })
 
+
+@app.route('/get-list', methods=['POST'])
+def get_peer_list(headers="", body=""):
+    try:
+        # current_time = time.time()
+        # expired_peers = [peer for peer, info in  if current_time - info["last_seen"] > 30000]
+        # for peer in expired_peers:
+        #     del 
+        #     print(f"[SampleApp] Removed expired peer {peer}")
+        data = json.loads(body) if body else {}
+        channel_name = data.get("channel", "general")
+        peer_list = []
+        for peer_id, info in channels[channel_name]["peers"].items():
+            peer_list.append({
+                "peer_id": peer_id,
+                "ip": info["ip"],
+                "port": info["port"],
+                "name": info["name"]
+            })
+        
+        response = json.dumps({
+            "status": "success",
+            "peers": peer_list,
+            "count": len(peer_list)
+        })
+        print(f"[SampleApp] Returning peer list with {len(peer_list)} peers")
+        return(
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: {}\r\n"
+            "\r\n"
+            "{}".format(len(response), response)
+        )
+    except Exception as e:
+        print(f"[SampleApp] Error in get-list: {e}")
+        response = json.dumps({
+            "status": "error",
+            "message": "An error occurred while retrieving the peer list."
+        })
+        return(
+            "HTTP/1.1 500 Internal Server Error\r\n"
+            "Content-Type: application/json\r\n"
+            "\r\n"
+            "{}".format(len(response), response)
+        )
+
 @app.route('/get-list', methods=['GET'])
 def get_peer_list(headers="", body=""):
     try:
-        current_time = time.time()
-        expired_peers = [peer for peer, info in peers.items() if current_time - info["last_seen"] > 30000]
-        for peer in expired_peers:
-            del peers[peer]
-            print(f"[SampleApp] Removed expired peer {peer}")
+        # current_time = time.time()
+        # expired_peers = [peer for peer, info in  if current_time - info["last_seen"] > 30000]
+        # for peer in expired_peers:
+        #     del 
+        #     print(f"[SampleApp] Removed expired peer {peer}")
         peer_list = []
-        for peer_id, info in peers.items():
+        for peer_id, info in channels["general"]["peers"].items():
             peer_list.append({
                 "peer_id": peer_id,
                 "ip": info["ip"],
@@ -205,8 +250,12 @@ def remove_peer(headers="", body=""):
                 "{}".format(len(response), response)
             )
         
-        if peer_id in peers:
-            del peers[peer_id]
+        if peer_id in channels["general"]["peers"]:
+            del channels["general"]["peers"][peer_id]
+            if peer_id in channels["tech"]["peers"]:
+                del channels["tech"]["peers"][peer_id]
+            if peer_id in channels["random"]["peers"]:
+                del channels["random"]["peers"][peer_id]
             print(f"[SampleApp] Removed peer {peer_id}")
 
             response = json.dumps({
@@ -245,6 +294,116 @@ def remove_peer(headers="", body=""):
         )
 
 
+@app.route('/add-peer-to-channel', methods=['POST'])
+def add_peer_to_channel(headers="", body=""):
+    """
+    Add an existing peer to a specific channel.
+    
+    Request body: {
+        "peer_id": "127.0.0.1:5001",
+        "channel_name": "tech"
+    }
+    """
+    try:
+        data = json.loads(body) if body else {}
+        peer_id = data.get("peer_id")
+        channel_name = data.get("channel_name")
+        
+        if not peer_id or not channel_name:
+            response = json.dumps({
+                "status": "error",
+                "message": "peer_id and channel_name are required."
+            })
+            return(
+                "HTTP/1.1 400 Bad Request\r\n"
+                "Content-Type: application/json\r\n"
+                "Content-Length: {}\r\n"
+                "\r\n"
+                "{}".format(len(response), response)
+            )
+        
+        with peers_lock:
+            # Check if channel exists
+            if channel_name not in channels:
+                response = json.dumps({
+                    "status": "error",
+                    "message": f"Channel '{channel_name}' does not exist."
+                })
+                return(
+                    "HTTP/1.1 404 Not Found\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: {}\r\n"
+                    "\r\n"
+                    "{}".format(len(response), response)
+                )
+            
+            # Find peer in any channel
+            peer_info = None
+            for ch_name, ch_data in channels.items():
+                if peer_id in ch_data["peers"]:
+                    peer_info = ch_data["peers"][peer_id].copy()
+                    break
+            
+            if not peer_info:
+                response = json.dumps({
+                    "status": "error",
+                    "message": f"Peer {peer_id} not found. Register with /submit-info first."
+                })
+                return(
+                    "HTTP/1.1 404 Not Found\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: {}\r\n"
+                    "\r\n"
+                    "{}".format(len(response), response)
+                )
+            
+            # Check if peer is already in the channel
+            if peer_id in channels[channel_name]["peers"]:
+                response = json.dumps({
+                    "status": "success",
+                    "message": f"Peer {peer_id} is already in channel '{channel_name}'."
+                })
+                return(
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: {}\r\n"
+                    "\r\n"
+                    "{}".format(len(response), response)
+                )
+            
+            # Add peer to the channel
+            peer_info["last_seen"] = time.time()
+            channels[channel_name]["peers"][peer_id] = peer_info
+            
+            print(f"[SampleApp] Added peer {peer_id} to channel '{channel_name}'")
+            
+            response = json.dumps({
+                "status": "success",
+                "message": f"Peer {peer_id} added to channel '{channel_name}' successfully.",
+                "channel": channel_name,
+                "peer_count": len(channels[channel_name]["peers"])
+            })
+            return(
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: application/json\r\n"
+                "Content-Length: {}\r\n"
+                "\r\n"
+                "{}".format(len(response), response)
+            )
+    except Exception as e:
+        print(f"[SampleApp] Error in add-peer-to-channel: {e}")
+        response = json.dumps({
+            "status": "error",
+            "message": "An error occurred while adding peer to channel."
+        })
+        return(
+            "HTTP/1.1 500 Internal Server Error\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: {}\r\n"
+            "\r\n"
+            "{}".format(len(response), response)
+        )
+
 @app.route('/ping', methods=['POST'])
 def ping(headers="", body=""):
     try:
@@ -253,8 +412,8 @@ def ping(headers="", body=""):
         print(f"[SampleApp] Received ping from {peer_id}")
         timestamp = time.time()
         with peers_lock:
-            if peer_id in peers:
-                peers[peer_id]['last_seen'] = timestamp
+            if peer_id in channels["general"]["peers"]:
+                channels["general"]["peers"][peer_id]['last_seen'] = timestamp
                 response = json.dumps({
                     "status": "success",
                     "message": f"Keep alive for {peer_id}."

@@ -5,6 +5,7 @@ import threading
 from daemon.weaprous import WeApRous
 import urllib.request
 import urllib.error
+import socket
 import sys, os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 class peer2peer:
@@ -13,16 +14,25 @@ class peer2peer:
         self.tracker_url = tracker_url
         self.port = port
         self.peer_name = peer_name
-        self.ip = '127.0.0.1'
-        self.peer_id = f"{self.ip}:{self.port}"\
+        self.ip = self.get_local_ip()
+        self.peer_id = f"{self.ip}:{self.port}"
         
         self.app = WeApRous()
-        self.connected_peers = {}
+        self.connected_peers = {"general": {}, "tech": {}, "random": {}}
         self.messages = []
         self.setup_own_routes()
         self.running = True 
         self.heartbeat_thread = None
         self.cookies = {}
+
+    def get_local_ip(self):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                return s.getsockname()[0]
+        except Exception as e:
+            print(f"Falling back to localhost for IP: {e}")
+            return "127.0.0.1"
 
     def register_tracker(self):
         try:
@@ -58,44 +68,48 @@ class peer2peer:
             print(f"Error registering with tracker: {e}") 
 
 
-        # Register with the tracker
-    def get_peers_list(self):
+    def get_peers_list(self, channel="general"):
         try:
             if self.cookies and self.cookies.get("auth", "") == "true":
-                print("Adding auth cookie to request headers for get_peers_list")
                 req_headers = {
                     "Content-Type": "application/json",
                     "Cookie": f"auth={self.cookies.get('auth', '')}"
                 }
-            req = urllib.request.Request(
-                method="GET",
-                url=f"{self.tracker_url}/get-list",
-                headers=req_headers if self.cookies and self.cookies.get("auth", "") == "true" else {"Content-Type": "application/json"}
-            )
+            else:
+                req_headers = {"Content-Type": "application/json"}
+                
+            if channel == "general":
+                req = urllib.request.Request(
+                    method="GET",
+                    url=f"{self.tracker_url}/get-list",
+                    headers=req_headers
+                )
+            else:
+                req = urllib.request.Request(
+                    method="POST",
+                    url=f"{self.tracker_url}/get-list",
+                    data=json.dumps({"channel": channel}).encode('utf-8'),
+                    headers=req_headers
+                )
 
             with urllib.request.urlopen(req, timeout=5) as response:
                 if response.getcode() == 200:
-                    #print("Getting peers list from tracker")
-
                     resp_data = response.read().decode('utf-8')
-                    # print(f"Response data: {resp_data}") # Optional: Comment out to reduce noise
                     resp_json = json.loads(resp_data)
                     
-                    # --- FIX START ---
                     peers_list = resp_json.get("peers", [])
                     
-                    # Convert the list to a dictionary: { "peer_id": {data...} }
+                    # Update the specific channel's peer list
                     new_peers_dict = {}
                     for p in peers_list:
                         pid = p.get('peer_id')
-                        # Ensure we don't add ourselves to our own connection list
                         if pid and pid != self.peer_id:
                             new_peers_dict[pid] = p
-                            
-                    self.connected_peers = new_peers_dict
-                    # --- FIX END ---
                     
-                    #print(f"Connected peers: {self.connected_peers}")
+                    # Update only the specific channel
+                    self.connected_peers[channel] = new_peers_dict
+                    print(f"Retrieved {len(new_peers_dict)} peers from channel '{channel}'")
+                    
         except Exception as e:
             print(f"Error getting peers list from tracker: {e}")
 
@@ -128,9 +142,11 @@ class peer2peer:
     
     def check_alive(self):
         while self.running:
-            self.get_peers_list()
+            # Refresh peers for all joined channels
+            for channel in self.connected_peers.keys():
+                self.get_peers_list(channel)
             self.ping_tracker()
-            time.sleep(5)  # Check every 30 seconds
+            time.sleep(5)
 
 
     def setup_own_routes(self):
@@ -146,18 +162,24 @@ class peer2peer:
                 peer_ip = data.get("ip", "")
                 peer_port = data.get("port", 0)
                 peer_name = data.get("name", "anonymous")
+                channel = data.get("channel", "general")
 
                 if peer_id and peer_ip and peer_port:
-                    self.connected_peers[peer_id] = {
+                    # Add peer to the specific channel
+                    if channel not in self.connected_peers:
+                        self.connected_peers[channel] = {}
+                    
+                    self.connected_peers[channel][peer_id] = {
                         "ip": peer_ip,
                         "port": peer_port,
                         "name": peer_name
                     }
                     response = {
                         "status": "success",
-                        "message": f"Connected to peer {peer_id}",
+                        "message": f"Connected to peer {peer_id} in channel {channel}",
                         "peer_id": peer_id,
-                        "name": peer_name
+                        "name": peer_name,
+                        "channel": channel
                     }
                     return(
                         "HTTP/1.1 200 OK\r\n"
@@ -198,6 +220,7 @@ class peer2peer:
                 from_name = data.get("from_name", "anonymous")
                 message = data.get("message", "")
                 timestamp = data.get("timestamp", time.time())
+                channel = data.get("channel", "general")
 
                 if from_peer and message:
                     self.messages.append({
@@ -205,13 +228,14 @@ class peer2peer:
                         "from": from_peer,
                         "from_name": from_name,
                         "message": message,
-                        "timestamp": timestamp
+                        "timestamp": timestamp,
+                        "channel": channel
                     })
                     response = {
                         "status": "success",
                         "message": f"Message received from {from_peer}"
                     }
-                    print(f"Broadcast message received from {from_peer}: {message}")
+                    print(f"{channel} message received from {from_peer}: {message}")
                     return(
                         "HTTP/1.1 200 OK\r\n"
                         "Content-Type: application/json\r\n"
@@ -297,65 +321,90 @@ class peer2peer:
                 )
 
 
-    def connect_to_peers(self, peer_ip, peer_port, peer_id):
+    def connect_to_peers(self, peer_ip, peer_port, peer_id, channel="general"):
         try:
             payload = {
                 "peer_id": self.peer_id,
                 "ip": self.ip,
                 "port": self.port,
-                "name": self.peer_name
+                "name": self.peer_name,
+                "channel": channel
             }
+            if self.cookies and self.cookies.get("auth", "") == "true":
+                req_headers = {
+                    "Content-Type": "application/json",
+                    "Cookie": f"auth={self.cookies.get('auth', '')}"
+                }
+            else:
+                req_headers = {"Content-Type": "application/json"}  
             data = json.dumps(payload).encode('utf-8')
             req = urllib.request.Request(
                 method="POST",
                 url=f"http://{peer_ip}:{peer_port}/connect-peer",
                 data=data,
-                headers={"Content-Type": "application/json"}
+                headers=req_headers
             )
 
             with urllib.request.urlopen(req, timeout=5) as response:
                 if response.getcode() == 200:
                     resp_data = response.read().decode('utf-8')
                     resp_json = json.loads(resp_data)
-                    print(f"Connected to peer {peer_id}: {resp_json}")
+                    print(f"Connected to peer {peer_id} in channel '{channel}': {resp_json}")
         except Exception as e:
-            print(f"Error connecting to peer {peer_id}: {e}")
+            pass  # Silently ignore connection errors - peer might not be ready
     
-    def send_broadcast_message(self, message):
+    def send_broadcast_message(self, message, channel="general"):
         timestamp = time.time()
-        if not self.connected_peers:
-            print("No connected peers to send the broadcast message.")
+        
+        # Get peers from the specific channel
+        channel_peers = self.connected_peers.get(channel, {})
+        
+        if not channel_peers:
+            print(f"No connected peers in channel '{channel}' to send the broadcast message.")
             return
-        for peer_id, peer_info in self.connected_peers.items():
+            
+        for peer_id, peer_info in channel_peers.items():
             try:
                 payload = {
                     "from_peer": self.peer_id,
                     "from_name": self.peer_name,
                     "message": message,
-                    "timestamp": timestamp
+                    "timestamp": timestamp,
+                    "channel": channel
                 }
+                if self.cookies and self.cookies.get("auth", "") == "true":
+                    req_headers = {
+                        "Content-Type": "application/json",
+                        "Cookie": f"auth={self.cookies.get('auth', '')}"
+                    }
+                else:
+                    req_headers = {"Content-Type": "application/json"}
                 data = json.dumps(payload).encode('utf-8')
                 req = urllib.request.Request(
                     method="POST",
                     url=f"http://{peer_info['ip']}:{peer_info['port']}/broadcast-peer",
                     data=data,
-                    headers={"Content-Type": "application/json"}
+                    headers=req_headers
                 )
 
                 with urllib.request.urlopen(req, timeout=5) as response:
                     if response.getcode() == 200:
                         resp_data = response.read().decode('utf-8')
                         resp_json = json.loads(resp_data)
-                        print(f"Broadcast message sent to {peer_id}: {resp_json}")
+                        print(f"[{channel}] Broadcast message sent to {peer_id}: {resp_json}")
             except Exception as e:
-                print(f"Error sending broadcast message to {peer_id}: {e}")
+                print(f"Error sending broadcast message to {peer_id} in channel '{channel}': {e}")
 
     def send_direct_message(self, peer_id, message):
         timestamp = time.time()
-        peer_info = self.connected_peers.get(peer_id, None)
+        
+        # Search for peer in general channel only
+        peer_info = self.connected_peers["general"].get(peer_id, None)
+        
         if not peer_info:
-            print(f"Peer {peer_id} not found in connected peers.")
+            print(f"Peer {peer_id} not found in general channel.")
             return
+            
         try:
             payload = {
                 "from_peer": self.peer_id,
@@ -363,12 +412,19 @@ class peer2peer:
                 "message": message,
                 "timestamp": timestamp
             }
+            if self.cookies and self.cookies.get("auth", "") == "true":
+                req_headers = {
+                    "Content-Type": "application/json",
+                    "Cookie": f"auth={self.cookies.get('auth', '')}"
+                }
+            else:
+                req_headers = {"Content-Type": "application/json"}
             data = json.dumps(payload).encode('utf-8')
             req = urllib.request.Request(
                 method="POST",
                 url=f"http://{peer_info['ip']}:{peer_info['port']}/send-peer",
                 data=data,
-                headers={"Content-Type": "application/json"}
+                headers=req_headers
             )
 
             with urllib.request.urlopen(req, timeout=5) as response:
@@ -379,18 +435,57 @@ class peer2peer:
         except Exception as e:
             print(f"Error sending direct message to {peer_id}: {e}")
 
-    def find_all_peers_and_connect(self):
-        all_peers = self.get_peers_list()
-        if not all_peers:
-            print("No peers found from tracker.")
+    def find_all_peers_and_connect(self, channel="general"):
+        self.get_peers_list(channel)
+        channel_peers = self.connected_peers.get(channel, {})
+        
+        if not channel_peers:
+            print(f"No peers found in channel '{channel}' from tracker.")
             return
-        for peer in all_peers:
-            peer_id = peer.get("peer_id", "")
-            peer_ip = peer.get("ip", "")
-            peer_port = peer.get("port", 0)
+            
+        for peer_id, peer_info in channel_peers.items():
+            peer_ip = peer_info.get("ip", "")
+            peer_port = peer_info.get("port", 0)
             if peer_id != self.peer_id:
-                self.connect_to_peers(peer_ip, peer_port, peer_id)
+                self.connect_to_peers(peer_ip, peer_port, peer_id, channel)
     
+    def join_channel(self, channel_name):
+        """Join a specific channel"""
+        try:
+            payload = {
+                "peer_id": self.peer_id,
+                "channel_name": channel_name
+            }
+            data = json.dumps(payload).encode('utf-8')
+            
+            req_headers = {"Content-Type": "application/json"}
+            if self.cookies and self.cookies.get("auth", "") == "true":
+                req_headers["Cookie"] = f"auth={self.cookies.get('auth', '')}"
+            
+            req = urllib.request.Request(
+                method="POST",
+                url=f"{self.tracker_url}/add-peer-to-channel",
+                data=data,
+                headers=req_headers
+            )
+            
+            with urllib.request.urlopen(req, timeout=5) as response:
+                if response.getcode() == 200:
+                    resp_data = response.read().decode('utf-8')
+                    resp_json = json.loads(resp_data)
+                    
+                    if resp_json.get("status") == "success":
+                        print(f"Joined channel: {channel_name}")
+                        # Discover and connect to peers in this channel
+                        self.find_all_peers_and_connect(channel_name)
+                        return True
+                    else:
+                        print(f"Failed to join channel: {resp_json.get('message')}")
+                        return False
+        except Exception as e:
+            print(f"Error joining channel {channel_name}: {e}")
+            return False
+
     def find_some_peers_and_connect(self, peer_name=""):
         """Connect to specific peer(s) by name"""
         self.connected_peers = {}
@@ -415,17 +510,16 @@ class peer2peer:
         if not found_any:
             print(f"No peer found with name '{peer_name}'")
 
-    def list_peers(self):
-        """List connected peers"""
-        if not self.connected_peers:
-            #print("\nNo connected peers.")
-            pass
-        else:
-            pass
-            #print("\nConnected peers ({})".format(len(self.connected_peers)))
-            #for peer_id, info in self.connected_peers.items():
-                #print("  - {} ({})".format(info.get('name', 'Unknown'), peer_id))
+    def list_peers(self, channel="general"):
+        """List connected peers in a specific channel"""
+        channel_peers = self.connected_peers.get(channel, {})
         
+        if not channel_peers:
+            print(f"\nNo connected peers in channel '{channel}'.")
+        else:
+            print(f"\nConnected peers in '{channel}' ({len(channel_peers)}):")
+            for peer_id, info in channel_peers.items():
+                print(f"  - {info.get('name', 'Unknown')} ({peer_id})")
         
 
     def run_console(self):
@@ -482,25 +576,25 @@ class peer2peer:
         try:
             body = json.dumps({"peer_id": self.peer_id}).encode('utf-8')
             if self.cookies and self.cookies.get("auth", "") == "true":
-                print("Adding auth cookie to request headers for ping")
                 req_headers = {
                     "Content-Type": "application/json",
                     "Cookie": f"auth={self.cookies.get('auth', '')}"
                 }
+            else:
+                req_headers = {"Content-Type": "application/json"}
+                
             req = urllib.request.Request(
                 method="POST",
                 url=f"{self.tracker_url}/ping",
-                headers=req_headers if self.cookies and self.cookies.get("auth", "") == "true" else {"Content-Type": "application/json"},
+                headers=req_headers,
                 data=body
             )
-            print(req.data)
 
             self.find_all_peers_and_connect()
 
             with urllib.request.urlopen(req, timeout=5) as response:
                 if response.getcode() == 200:
                     pass
-                    #print("Pinged tracker successfully.")
         except Exception as e:
             print(f"Error pinging tracker: {e}")
 
@@ -532,7 +626,6 @@ class peer2peer:
             self.running = False
             print("Peer shut down.")
             time.sleep(1)
-          # Give some time for the server to start
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="P2P Peer")

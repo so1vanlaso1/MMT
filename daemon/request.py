@@ -176,6 +176,8 @@ class Request():
             pass
         return ""
     
+    #username=admin&password=pass
+
     def parse_form_data(self):
         """Parse form data from POST body."""
         form_data = {}

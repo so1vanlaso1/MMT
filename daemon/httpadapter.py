@@ -173,7 +173,8 @@ class HttpAdapter:
                     else:
                         if req.cookies.get('auth','') == 'true':
                             response = hook_result.encode('utf-8')
-                            print("[HttpAdapter] Hook processed for protected route {}".format(response))
+                            if req.hook._route_path != '/ping': 
+                                print("[HttpAdapter] Hook processed for protected route {}".format(response))
                         else:
                             response = self.build_error_response(401, "Unauthorized")
                             print("[HttpAdapter] Unauthorized access attempt to protected route via hook")
