@@ -6,6 +6,7 @@ import time
 import urllib.request
 import urllib.error
 import http.cookiejar
+import random
 from daemon.peer2peer import peer2peer
 
 class PeerChatUI:
@@ -151,7 +152,7 @@ class PeerChatUI:
         
         # Port
         ttk.Label(self.connection_frame, text="Port:").grid(row=0, column=2, sticky='w', padx=5)
-        self.port = tk.StringVar(value="5001")
+        self.port = tk.StringVar(value=str(random.randint(5000,6000)))
         ttk.Entry(self.connection_frame, textvariable=self.port, width=10).grid(row=0, column=3, padx=5)
         
         # Peer Name (auto-filled from login)

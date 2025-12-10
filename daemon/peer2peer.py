@@ -25,6 +25,9 @@ class peer2peer:
         self.heartbeat_thread = None
         self.cookies = {}
 
+        self.peers_lock = threading.Lock()
+        self.messages_lock = threading.Lock()
+
     def get_local_ip(self):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -98,6 +101,9 @@ class peer2peer:
                     resp_json = json.loads(resp_data)
                     
                     peers_list = resp_json.get("peers", [])
+
+                    #peers_list = [{"peer_id": "127.0.0.1:9001", "ip": "127.0.0.1", "port": 9001, "name": "peer1"},
+                    #              {"peer_id": "127.0.0.1:9002", "ip": "127.0.0.1", "port": 9002, "name": "peer2"}]
                     
                     # Update the specific channel's peer list
                     new_peers_dict = {}
@@ -107,7 +113,8 @@ class peer2peer:
                             new_peers_dict[pid] = p
                     
                     # Update only the specific channel
-                    self.connected_peers[channel] = new_peers_dict
+                    with self.peers_lock:
+                        self.connected_peers[channel] = new_peers_dict
                     print(f"Retrieved {len(new_peers_dict)} peers from channel '{channel}'")
                     
         except Exception as e:
@@ -143,7 +150,9 @@ class peer2peer:
     def check_alive(self):
         while self.running:
             # Refresh peers for all joined channels
-            for channel in self.connected_peers.keys():
+            with self.peers_lock:
+                channels = list(self.connected_peers.keys())
+            for channel in channels:
                 self.get_peers_list(channel)
             self.ping_tracker()
             time.sleep(5)
@@ -166,14 +175,15 @@ class peer2peer:
 
                 if peer_id and peer_ip and peer_port:
                     # Add peer to the specific channel
-                    if channel not in self.connected_peers:
-                        self.connected_peers[channel] = {}
-                    
-                    self.connected_peers[channel][peer_id] = {
-                        "ip": peer_ip,
-                        "port": peer_port,
-                        "name": peer_name
-                    }
+                    with self.peers_lock:
+                        if channel not in self.connected_peers:
+                            self.connected_peers[channel] = {}
+                        
+                        self.connected_peers[channel][peer_id] = {
+                            "ip": peer_ip,
+                            "port": peer_port,
+                            "name": peer_name
+                        }
                     response = {
                         "status": "success",
                         "message": f"Connected to peer {peer_id} in channel {channel}",
@@ -223,14 +233,15 @@ class peer2peer:
                 channel = data.get("channel", "general")
 
                 if from_peer and message:
-                    self.messages.append({
-                        "type": "broadcast",
-                        "from": from_peer,
-                        "from_name": from_name,
-                        "message": message,
-                        "timestamp": timestamp,
-                        "channel": channel
-                    })
+                    with self.messages_lock:
+                        self.messages.append({
+                            "type": "broadcast",
+                            "from": from_peer,
+                            "from_name": from_name,
+                            "message": message,
+                            "timestamp": timestamp,
+                            "channel": channel
+                        })
                     response = {
                         "status": "success",
                         "message": f"Message received from {from_peer}"
@@ -280,13 +291,14 @@ class peer2peer:
 
                 print(f"Direct message received from {from_peer}: {message}")
                 
-                self.messages.append({
-                            "type": "direct",
-                            "from": from_peer,
-                            "from_name": from_name,
-                            "message": message,
-                            "timestamp": timestamp
-                        })
+                with self.messages_lock:
+                    self.messages.append({
+                                "type": "direct",
+                                "from": from_peer,
+                                "from_name": from_name,
+                                "message": message,
+                                "timestamp": timestamp
+                            })
                         
                 response = {
                         "status": "success",
@@ -320,6 +332,8 @@ class peer2peer:
                     )
                 )
 
+
+    
 
     def connect_to_peers(self, peer_ip, peer_port, peer_id, channel="general"):
         try:
@@ -357,7 +371,8 @@ class peer2peer:
         timestamp = time.time()
         
         # Get peers from the specific channel
-        channel_peers = self.connected_peers.get(channel, {})
+        with self.peers_lock:
+            channel_peers = self.connected_peers.get(channel, {}).copy()
         
         if not channel_peers:
             print(f"No connected peers in channel '{channel}' to send the broadcast message.")
@@ -399,7 +414,8 @@ class peer2peer:
         timestamp = time.time()
         
         # Search for peer in general channel only
-        peer_info = self.connected_peers["general"].get(peer_id, None)
+        with self.peers_lock:
+            peer_info = self.connected_peers["general"].get(peer_id, None)
         
         if not peer_info:
             print(f"Peer {peer_id} not found in general channel.")
@@ -437,7 +453,8 @@ class peer2peer:
 
     def find_all_peers_and_connect(self, channel="general"):
         self.get_peers_list(channel)
-        channel_peers = self.connected_peers.get(channel, {})
+        with self.peers_lock:
+            channel_peers = self.connected_peers.get(channel, {}).copy()
         
         if not channel_peers:
             print(f"No peers found in channel '{channel}' from tracker.")
@@ -495,7 +512,9 @@ class peer2peer:
             return
 
         found_any = False
-        for peer_id, peer_info in self.connected_peers.items():
+        with self.peers_lock:
+            peers_copy = self.connected_peers.copy()
+        for peer_id, peer_info in peers_copy.items():
             # Check if this peer matches the requested name
             if peer_info.get("name", "") == peer_name:
                 peer_ip = peer_info.get("ip", "")
@@ -512,7 +531,8 @@ class peer2peer:
 
     def list_peers(self, channel="general"):
         """List connected peers in a specific channel"""
-        channel_peers = self.connected_peers.get(channel, {})
+        with self.peers_lock:
+            channel_peers = self.connected_peers.get(channel, {}).copy()
         
         if not channel_peers:
             print(f"\nNo connected peers in channel '{channel}'.")

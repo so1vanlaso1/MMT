@@ -169,20 +169,8 @@ class Response():
 
 
     def prepare_content_type(self, mime_type='text/html'):
-        """
-        Prepares the Content-Type header and determines the base directory
-        for serving the file based on its MIME type.
 
-        :params mime_type (str): MIME type of the requested resource.
-
-        :rtype str: Base directory path for locating the resource.
-
-        :raises ValueError: If the MIME type is unsupported.
-        """
-        
         base_dir = ""
-
-        # Processing mime_type based on main_type and sub_type
         main_type, sub_type = mime_type.split('/', 1)
         print("[Response] processing MIME main_type={} sub_type={}".format(main_type,sub_type))
         if main_type == 'text':
@@ -199,18 +187,6 @@ class Response():
         elif main_type == 'application':
             base_dir = BASE_DIR+"apps/"
             self.headers['Content-Type']='application/{}'.format(sub_type)
-        #
-        #  TODO: process other mime_type
-        #        application/xml       
-        #        application/zip
-        #        ...
-        #        text/csv
-        #        text/xml
-        #        ...
-        #        video/mp4 
-        #        video/mpeg
-        #        ...
-        #
         elif main_type == 'json':
             base_dir = BASE_DIR+"data/"
             self.headers['Content-Type']='application/json'

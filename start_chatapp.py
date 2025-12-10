@@ -156,13 +156,14 @@ def get_peer_list(headers="", body=""):
         data = json.loads(body) if body else {}
         channel_name = data.get("channel", "general")
         peer_list = []
-        for peer_id, info in channels[channel_name]["peers"].items():
-            peer_list.append({
-                "peer_id": peer_id,
-                "ip": info["ip"],
-                "port": info["port"],
-                "name": info["name"]
-            })
+        with peers_lock:
+            for peer_id, info in channels[channel_name]["peers"].items():
+                peer_list.append({
+                    "peer_id": peer_id,
+                    "ip": info["ip"],
+                    "port": info["port"],
+                    "name": info["name"]
+                })
         
         response = json.dumps({
             "status": "success",
@@ -251,12 +252,13 @@ def remove_peer(headers="", body=""):
             )
         
         if peer_id in channels["general"]["peers"]:
-            del channels["general"]["peers"][peer_id]
-            if peer_id in channels["tech"]["peers"]:
-                del channels["tech"]["peers"][peer_id]
-            if peer_id in channels["random"]["peers"]:
-                del channels["random"]["peers"][peer_id]
-            print(f"[SampleApp] Removed peer {peer_id}")
+            with peers_lock:
+                del channels["general"]["peers"][peer_id]
+                if peer_id in channels["tech"]["peers"]:
+                    del channels["tech"]["peers"][peer_id]
+                if peer_id in channels["random"]["peers"]:
+                    del channels["random"]["peers"][peer_id]
+                print(f"[SampleApp] Removed peer {peer_id}")
 
             response = json.dumps({
                 "status": "success",
